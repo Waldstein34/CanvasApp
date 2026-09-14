@@ -1,30 +1,39 @@
 package com.tomoyasu.canvasapp
 
+import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,13 +46,19 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import kotlin.math.max
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 // Studio Web版キャンバスの「ガラス」テーマ（data-theme="glass"）の見た目トークン。
 // studio/index.html の :root[data-theme="glass"] と .cv-* 系のCSSから採った。
@@ -146,70 +161,157 @@ fun CanvasScreen(host: String, port: String, onBack: () -> Unit) {
                     Text(error ?: "", color = ColOnS)
                 }
             }
-            board != null -> CanvasBoardView(board!!)
+            board != null -> CanvasBoardView(host, port, board!!)
         }
     }
 }
 
 @Composable
-private fun CanvasBoardView(board: CanvasBoard) {
+private fun CanvasBoardView(host: String, port: String, board: CanvasBoard) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     val cardHeights = remember { mutableStateMapOf<Int, Float>() }
+    val cards = remember(board) { mutableStateListOf(*board.cards.toTypedArray()) }
+    var newCardText by remember { mutableStateOf("") }
 
-    val cardRight = board.cards.maxOfOrNull { it.x + it.w } ?: 0f
+    fun showError(message: String) {
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+
+    fun addCard() {
+        val text = newCardText.trim()
+        if (text.isEmpty()) return
+        // 今見ている範囲の左上あたりに置く（Web版の「今頭にあること」と同じ役割）。
+        val worldX = (-offset.x / scale) / density.density + 40f
+        val worldY = (-offset.y / scale) / density.density + 40f
+        newCardText = ""
+        scope.launch {
+            val params = JSONObject().apply {
+                put("text", text)
+                put("x", worldX)
+                put("y", worldY)
+            }
+            val result = withContext(Dispatchers.IO) {
+                StudioClient.canvasOp(host, port, board.board, "card_add", params)
+            }
+            when (result) {
+                is StudioClient.OpResult.Success -> cards.add(parseCanvasCard(result.json.getJSONObject("card")))
+                is StudioClient.OpResult.Failure -> showError(result.message)
+            }
+        }
+    }
+
+    fun deleteCard(card: CanvasCard) {
+        scope.launch {
+            val params = JSONObject().apply { put("id", card.id) }
+            val result = withContext(Dispatchers.IO) {
+                StudioClient.canvasOp(host, port, board.board, "card_delete", params)
+            }
+            when (result) {
+                is StudioClient.OpResult.Success -> cards.removeAll { it.id == card.id }
+                is StudioClient.OpResult.Failure -> showError(result.message)
+            }
+        }
+    }
+
+    fun moveCard(card: CanvasCard, newX: Float, newY: Float) {
+        val index = cards.indexOfFirst { it.id == card.id }
+        if (index >= 0) cards[index] = cards[index].copy(x = newX, y = newY)
+        scope.launch {
+            val params = JSONObject().apply {
+                put("id", card.id)
+                put("x", newX)
+                put("y", newY)
+            }
+            val result = withContext(Dispatchers.IO) {
+                StudioClient.canvasOp(host, port, board.board, "card_update", params)
+            }
+            if (result is StudioClient.OpResult.Failure) showError(result.message)
+        }
+    }
+
+    val cardRight = cards.maxOfOrNull { it.x + it.w } ?: 0f
     val zoneRight = board.zones.maxOfOrNull { it.x + it.w } ?: 0f
-    val cardBottom = board.cards.maxOfOrNull { it.y + (cardHeights[it.id] ?: 60f) } ?: 0f
+    val cardBottom = cards.maxOfOrNull { it.y + (cardHeights[it.id] ?: 60f) } ?: 0f
     val zoneBottom = board.zones.maxOfOrNull { it.y + it.h } ?: 0f
     val maxX = max(800f, max(cardRight, zoneRight) + 400f)
     val maxY = max(800f, max(cardBottom, zoneBottom) + 400f)
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    scale = (scale * zoom).coerceIn(0.2f, 3f)
-                    offset += pan
-                }
-            }
-    ) {
+    Column(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
-                .size(maxX.dp, maxY.dp)
-                .graphicsLayer(
-                    scaleX = scale,
-                    scaleY = scale,
-                    translationX = offset.x,
-                    translationY = offset.y,
-                    transformOrigin = TransformOrigin(0f, 0f)
-                )
+                .weight(1f)
+                .fillMaxWidth()
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        scale = (scale * zoom).coerceIn(0.2f, 3f)
+                        offset += pan
+                    }
+                }
         ) {
-            // ---- 領域（一番奥） ----
-            board.zones.forEach { zone ->
-                Box(
-                    modifier = Modifier
-                        .offset(x = zone.x.dp, y = zone.y.dp)
-                        .size(zone.w.dp, zone.h.dp)
-                ) {
-                    ZoneBackground(zone)
-                    Text(
-                        zone.name,
-                        color = hexToColor(zone.color),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 11.5.sp,
-                        modifier = Modifier.padding(start = 11.dp, top = 7.dp)
+            Box(
+                modifier = Modifier
+                    .size(maxX.dp, maxY.dp)
+                    .graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale,
+                        translationX = offset.x,
+                        translationY = offset.y,
+                        transformOrigin = TransformOrigin(0f, 0f)
+                    )
+            ) {
+                // ---- 領域（一番奥） ----
+                board.zones.forEach { zone ->
+                    Box(
+                        modifier = Modifier
+                            .offset(x = zone.x.dp, y = zone.y.dp)
+                            .size(zone.w.dp, zone.h.dp)
+                    ) {
+                        ZoneBackground(zone)
+                        Text(
+                            zone.name,
+                            color = hexToColor(zone.color),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.5.sp,
+                            modifier = Modifier.padding(start = 11.dp, top = 7.dp)
+                        )
+                    }
+                }
+
+                // ---- 線（領域の上、カードの下） ----
+                WireLayer(cards, board.links, cardHeights)
+
+                // ---- カード（一番手前） ----
+                cards.forEach { card ->
+                    CardView(
+                        card = card,
+                        scale = scale,
+                        onSize = { h -> cardHeights[card.id] = h },
+                        onMoved = { nx, ny -> moveCard(card, nx, ny) },
+                        onDelete = { deleteCard(card) }
                     )
                 }
             }
+        }
 
-            // ---- 線（領域の上、カードの下） ----
-            WireLayer(board, cardHeights)
-
-            // ---- カード（一番手前） ----
-            board.cards.forEach { card ->
-                CardView(card, onSize = { h -> cardHeights[card.id] = h })
-            }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = newCardText,
+                onValueChange = { newCardText = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("今頭にあること…") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { addCard() })
+            )
+            Button(onClick = { addCard() }) { Text("追加") }
         }
     }
 }
@@ -233,8 +335,14 @@ private fun ZoneBackground(zone: CanvasZone) {
 }
 
 @Composable
-private fun CardView(card: CanvasCard, onSize: (Float) -> Unit) {
-    val density = androidx.compose.ui.platform.LocalDensity.current
+private fun CardView(
+    card: CanvasCard,
+    scale: Float,
+    onSize: (Float) -> Unit,
+    onMoved: (Float, Float) -> Unit,
+    onDelete: () -> Unit
+) {
+    val density = LocalDensity.current
     val colorHex = card.color
     val glassStyle = colorHex?.lowercase()?.let { GlassCardStyles[it] }
     val bg = glassStyle?.bg ?: colorHex?.let { hexToColor(it) } ?: ColCard
@@ -242,29 +350,55 @@ private fun CardView(card: CanvasCard, onSize: (Float) -> Unit) {
     val textColor = glassStyle?.text ?: (if (colorHex != null) ColOnColored else ColOnS)
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp)
 
+    // ドラッグ中は指の動きだけを足していき、離した時に1回だけAPIへ送る。
+    var dragX by remember(card.id) { mutableFloatStateOf(card.x) }
+    var dragY by remember(card.id) { mutableFloatStateOf(card.y) }
+
     Box(
         modifier = Modifier
-            .offset(x = card.x.dp, y = card.y.dp)
+            .offset(x = dragX.dp, y = dragY.dp)
             .width(card.w.dp)
             .background(bg, shape = shape)
             .border(1.5.dp, borderColor, shape)
-            .padding(vertical = 10.dp, horizontal = 12.dp)
-            .onSizeChanged { onSize(it.height / density.density) }
+            .pointerInput(card.id, scale) {
+                detectDragGestures(
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        dragX += (dragAmount.x / scale) / density.density
+                        dragY += (dragAmount.y / scale) / density.density
+                    },
+                    onDragEnd = { onMoved(dragX, dragY) }
+                )
+            }
     ) {
         Text(
             card.text.ifBlank { " " },
             color = textColor,
             fontSize = 12.5.sp,
-            lineHeight = 19.4.sp
+            lineHeight = 19.4.sp,
+            modifier = Modifier
+                .padding(vertical = 10.dp, horizontal = 12.dp)
+                .onSizeChanged { onSize(it.height / density.density) }
+        )
+        Text(
+            "×",
+            color = textColor,
+            fontSize = 13.sp,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(4.dp)
+                .pointerInput(card.id) {
+                    detectTapGestures(onTap = { onDelete() })
+                }
         )
     }
 }
 
 @Composable
-private fun WireLayer(board: CanvasBoard, cardHeights: Map<Int, Float>) {
-    val cardById = remember(board) { board.cards.associateBy { it.id } }
+private fun WireLayer(cards: List<CanvasCard>, links: List<CanvasLink>, cardHeights: Map<Int, Float>) {
+    val cardById = remember(cards) { cards.associateBy { it.id } }
     Canvas(modifier = Modifier.fillMaxSize()) {
-        board.links.forEach { link ->
+        links.forEach { link ->
             val a = cardById[link.from] ?: return@forEach
             val b = cardById[link.to] ?: return@forEach
             val ah = cardHeights[a.id] ?: 60f

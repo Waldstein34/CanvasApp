@@ -30,10 +30,20 @@ data class CanvasLink(
 )
 
 data class CanvasBoard(
+    val board: String,
     val title: String,
     val cards: List<CanvasCard>,
     val zones: List<CanvasZone>,
     val links: List<CanvasLink>
+)
+
+fun parseCanvasCard(o: JSONObject): CanvasCard = CanvasCard(
+    id = o.optInt("id"),
+    text = o.optString("text", ""),
+    x = o.optDouble("x", 100.0).toFloat(),
+    y = o.optDouble("y", 100.0).toFloat(),
+    w = o.optDouble("w", 168.0).toFloat(),
+    color = o.optString("color").takeIf { it.isNotBlank() }
 )
 
 fun parseCanvasBoard(json: JSONObject): CanvasBoard {
@@ -41,17 +51,7 @@ fun parseCanvasBoard(json: JSONObject): CanvasBoard {
     val cardsArr = json.optJSONArray("cards")
     if (cardsArr != null) {
         for (i in 0 until cardsArr.length()) {
-            val o = cardsArr.getJSONObject(i)
-            cards.add(
-                CanvasCard(
-                    id = o.optInt("id"),
-                    text = o.optString("text", ""),
-                    x = o.optDouble("x", 100.0).toFloat(),
-                    y = o.optDouble("y", 100.0).toFloat(),
-                    w = o.optDouble("w", 168.0).toFloat(),
-                    color = o.optString("color").takeIf { it.isNotBlank() }
-                )
-            )
+            cards.add(parseCanvasCard(cardsArr.getJSONObject(i)))
         }
     }
 
@@ -91,6 +91,7 @@ fun parseCanvasBoard(json: JSONObject): CanvasBoard {
     }
 
     return CanvasBoard(
+        board = json.optString("board", "global"),
         title = json.optString("title", "キャンバス"),
         cards = cards,
         zones = zones,

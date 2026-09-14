@@ -1,8 +1,11 @@
 package com.tomoyasu.canvasapp
 
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
+import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /** StudioのキャンバスAPIに繋がるかどうかだけを確認する。 */
@@ -55,6 +58,38 @@ object StudioClient {
             }
         } catch (e: Exception) {
             BoardResult.Failure(describeError(e))
+        }
+    }
+
+    sealed class OpResult {
+        data class Success(val json: JSONObject) : OpResult()
+        data class Failure(val message: String) : OpResult()
+    }
+
+    /** card_add / card_update / card_delete など、/api/canvas/op への操作を1つ送る。
+     * ネットワーク通信を行うので、呼び出し側はバックグラウンドスレッドから呼ぶこと。 */
+    fun canvasOp(host: String, port: String, board: String, op: String, params: JSONObject): OpResult {
+        val url = "http://$host:$port/api/canvas/op"
+        val body = JSONObject(params.toString()).apply {
+            put("board", board)
+            put("op", op)
+        }
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .post(body.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    return OpResult.Failure("サーバーがエラーを返しました（HTTP ${response.code}）")
+                }
+                val json = JSONObject(text)
+                if (json.has("error")) OpResult.Failure(json.getString("error"))
+                else OpResult.Success(json)
+            }
+        } catch (e: Exception) {
+            OpResult.Failure(describeError(e))
         }
     }
 
