@@ -9,9 +9,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -43,13 +45,54 @@ import kotlin.math.max
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-// Studio Web版キャンバスの見た目トークン（studio/index.html の :root と .cv-* から採ったもの）
-private val ColBg = Color(0xFF171615)          // --s
-private val ColCard = Color(0xFF1F1F27)        // --s-c
-private val ColCardBorder = Color(0xFF413D4A)  // --outline-var
-private val ColOnS = Color(0xFFF3EFF7)         // --on-s
-private val ColOutline = Color(0xFF968FA3)     // --outline / 線の色
-private val ColOnColored = Color(0xFF17161A)   // 色付きカードの文字色
+// Studio Web版キャンバスの「ガラス」テーマ（data-theme="glass"）の見た目トークン。
+// studio/index.html の :root[data-theme="glass"] と .cv-* 系のCSSから採った。
+private val GlassBgBase = Color(0xFF0A0911)     // rgba(11,10,18,.94) を不透明下地の上に合成した近似値
+private val ColCard = Color(0x12FFFFFF)         // --s-c: rgba(255,255,255,.07)
+private val ColCardBorder = Color(0x29FFFFFF)   // --outline-var: rgba(255,255,255,.16)
+private val ColOnS = Color(0xFFF6F3FC)          // --on-s
+private val ColOutline = Color(0xFFA8A1BD)      // --outline / 線の色
+private val ColOnColored = Color(0xFFF0EDF7)    // 色付きカードの文字色（ガラス版は白系）
+
+private fun rgba(r: Int, g: Int, b: Int, a: Float) =
+    Color(red = r / 255f, green = g / 255f, blue = b / 255f, alpha = a)
+
+// カードの色は付箋の色見本5色＋既定のみ（CV_PALETTE）。ガラステーマでは
+// この5色だけ、うっすら色のついた半透明に上書きされる（index.html:2251〜2260）。
+private data class GlassCardStyle(val bg: Color, val border: Color, val text: Color)
+private val GlassCardStyles = mapOf(
+    "#9dc0f5" to GlassCardStyle(rgba(66, 133, 244, .20f), rgba(66, 133, 244, .55f), Color(0xFFEAF1FF)),
+    "#9fe0bd" to GlassCardStyle(rgba(52, 168, 83, .20f), rgba(52, 168, 83, .55f), Color(0xFFEAFFF2)),
+    "#f5dc9b" to GlassCardStyle(rgba(251, 188, 5, .18f), rgba(251, 188, 5, .50f), Color(0xFFFFF7E6)),
+    "#f5b3ac" to GlassCardStyle(rgba(234, 67, 53, .18f), rgba(234, 67, 53, .50f), Color(0xFFFFEEED)),
+    "#c3b6e8" to GlassCardStyle(rgba(154, 107, 216, .20f), rgba(154, 107, 216, .55f), Color(0xFFF4EEFF))
+)
+
+// 画面の四隅ににじむ光（body::before / .cv-ov::before と同じ4色・同じ位置）。
+private data class GlowSpot(val cx: Float, val cy: Float, val color: Color, val alpha: Float)
+private val GlowSpots = listOf(
+    GlowSpot(0.14f, 0.08f, Color(0xFF4285F4), .33f),
+    GlowSpot(0.86f, 0.14f, Color(0xFFEA4335), .19f),
+    GlowSpot(0.74f, 0.92f, Color(0xFF34A853), .24f),
+    GlowSpot(0.20f, 0.90f, Color(0xFFFBBC05), .15f)
+)
+
+private fun drawGlow(scope: androidx.compose.ui.graphics.drawscope.DrawScope) {
+    with(scope) {
+        val radius = kotlin.math.max(size.width, size.height) * 0.65f
+        GlowSpots.forEach { spot ->
+            drawCircle(
+                brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                    colors = listOf(spot.color.copy(alpha = spot.alpha), spot.color.copy(alpha = 0f)),
+                    center = Offset(size.width * spot.cx, size.height * spot.cy),
+                    radius = radius
+                ),
+                radius = radius,
+                center = Offset(size.width * spot.cx, size.height * spot.cy)
+            )
+        }
+    }
+}
 
 private fun hexToColor(hex: String, alpha: Float = 1f): Color {
     return try {
@@ -82,7 +125,7 @@ fun CanvasScreen(host: String, port: String, onBack: () -> Unit) {
         loading = false
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(ColBg)) {
+    Column(modifier = Modifier.fillMaxSize().background(GlassBgBase).drawBehind { drawGlow(this) }) {
         Box(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
@@ -146,7 +189,7 @@ private fun CanvasBoardView(board: CanvasBoard) {
             board.zones.forEach { zone ->
                 Box(
                     modifier = Modifier
-                        .graphicsLayer(translationX = zone.x, translationY = zone.y)
+                        .offset(x = zone.x.dp, y = zone.y.dp)
                         .size(zone.w.dp, zone.h.dp)
                 ) {
                     ZoneBackground(zone)
@@ -192,20 +235,19 @@ private fun ZoneBackground(zone: CanvasZone) {
 @Composable
 private fun CardView(card: CanvasCard, onSize: (Float) -> Unit) {
     val density = androidx.compose.ui.platform.LocalDensity.current
-    val hasColor = card.color != null
-    val bg = if (hasColor) hexToColor(card.color!!) else ColCard
-    val textColor = if (hasColor) ColOnColored else ColOnS
+    val colorHex = card.color
+    val glassStyle = colorHex?.lowercase()?.let { GlassCardStyles[it] }
+    val bg = glassStyle?.bg ?: colorHex?.let { hexToColor(it) } ?: ColCard
+    val borderColor = glassStyle?.border ?: ColCardBorder
+    val textColor = glassStyle?.text ?: (if (colorHex != null) ColOnColored else ColOnS)
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp)
 
     Box(
         modifier = Modifier
-            .graphicsLayer(translationX = card.x, translationY = card.y)
+            .offset(x = card.x.dp, y = card.y.dp)
             .width(card.w.dp)
-            .background(bg, shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
-            .then(
-                if (!hasColor)
-                    Modifier.border(1.5.dp, ColCardBorder, androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
-                else Modifier
-            )
+            .background(bg, shape = shape)
+            .border(1.5.dp, borderColor, shape)
             .padding(vertical = 10.dp, horizontal = 12.dp)
             .onSizeChanged { onSize(it.height / density.density) }
     ) {
