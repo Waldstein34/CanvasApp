@@ -32,7 +32,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxWidth()) {
-                    ConnectionSettingsScreen()
+                    AppRoot()
                 }
             }
         }
@@ -40,12 +40,36 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun ConnectionSettingsScreen() {
+fun AppRoot() {
+    val context = LocalContext.current
+    var showCanvas by remember { mutableStateOf(false) }
+    var host by remember { mutableStateOf(ConnectionPrefs.loadHost(context)) }
+    var port by remember { mutableStateOf(ConnectionPrefs.loadPort(context)) }
+
+    if (showCanvas) {
+        CanvasScreen(host = host, port = port, onBack = { showCanvas = false })
+    } else {
+        ConnectionSettingsScreen(
+            host = host,
+            port = port,
+            onHostChange = { host = it },
+            onPortChange = { port = it },
+            onConnected = { showCanvas = true }
+        )
+    }
+}
+
+@Composable
+fun ConnectionSettingsScreen(
+    host: String,
+    port: String,
+    onHostChange: (String) -> Unit,
+    onPortChange: (String) -> Unit,
+    onConnected: () -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var host by remember { mutableStateOf(ConnectionPrefs.loadHost(context)) }
-    var port by remember { mutableStateOf(ConnectionPrefs.loadPort(context)) }
     var status by remember { mutableStateOf("未接続") }
     var testing by remember { mutableStateOf(false) }
 
@@ -58,24 +82,27 @@ fun ConnectionSettingsScreen() {
 
         OutlinedTextField(
             value = host,
-            onValueChange = { host = it },
+            onValueChange = onHostChange,
             label = { Text("IPアドレス（例: 192.168.43.23）") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
         OutlinedTextField(
             value = port,
-            onValueChange = { port = it },
+            onValueChange = onPortChange,
             label = { Text("ポート") },
             singleLine = true,
             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.fillMaxWidth()
         )
 
+        var connected by remember { mutableStateOf(false) }
+
         Button(
             enabled = !testing && host.isNotBlank() && port.isNotBlank(),
             onClick = {
                 testing = true
+                connected = false
                 status = "接続を確認しています…"
                 ConnectionPrefs.save(context, host, port)
                 scope.launch {
@@ -83,7 +110,10 @@ fun ConnectionSettingsScreen() {
                         StudioClient.testConnection(host, port)
                     }
                     status = when (result) {
-                        is StudioClient.TestResult.Success -> "接続成功（盤 ${result.boardCount}件を確認）"
+                        is StudioClient.TestResult.Success -> {
+                            connected = true
+                            "接続成功（盤 ${result.boardCount}件を確認）"
+                        }
                         is StudioClient.TestResult.Failure -> "接続できません: ${result.message}"
                     }
                     testing = false
@@ -94,5 +124,9 @@ fun ConnectionSettingsScreen() {
         }
 
         Text(status)
+
+        if (connected) {
+            Button(onClick = onConnected) { Text("盤を開く") }
+        }
     }
 }
