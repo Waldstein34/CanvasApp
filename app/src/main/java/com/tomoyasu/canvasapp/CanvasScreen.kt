@@ -174,6 +174,7 @@ private fun CanvasBoardView(host: String, port: String, board: CanvasBoard) {
 
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
+    var draggingCard by remember { mutableStateOf(false) }
     val cardHeights = remember { mutableStateMapOf<Int, Float>() }
     val cards = remember(board) { mutableStateListOf(*board.cards.toTypedArray()) }
     var newCardText by remember { mutableStateOf("") }
@@ -247,9 +248,14 @@ private fun CanvasBoardView(host: String, port: String, board: CanvasBoard) {
                 .weight(1f)
                 .fillMaxWidth()
                 .pointerInput(Unit) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        scale = (scale * zoom).coerceIn(0.2f, 3f)
-                        offset += pan
+                    detectTransformGestures { centroid, pan, zoom, _ ->
+                        if (draggingCard) return@detectTransformGestures
+                        val oldScale = scale
+                        val newScale = (oldScale * zoom).coerceIn(0.2f, 3f)
+                        // 指の間（centroid）を中心に拡大縮小する。これをしないと
+                        // ピンチのたびに盤が左上隅を軸に飛んでいくように見えてしまう。
+                        offset = centroid + pan - (centroid - offset) * (newScale / oldScale)
+                        scale = newScale
                     }
                 }
         ) {
@@ -291,6 +297,7 @@ private fun CanvasBoardView(host: String, port: String, board: CanvasBoard) {
                         card = card,
                         scale = scale,
                         onSize = { h -> cardHeights[card.id] = h },
+                        onDragActiveChange = { draggingCard = it },
                         onMoved = { nx, ny -> moveCard(card, nx, ny) },
                         onDelete = { deleteCard(card) }
                     )
@@ -339,6 +346,7 @@ private fun CardView(
     card: CanvasCard,
     scale: Float,
     onSize: (Float) -> Unit,
+    onDragActiveChange: (Boolean) -> Unit,
     onMoved: (Float, Float) -> Unit,
     onDelete: () -> Unit
 ) {
@@ -362,12 +370,17 @@ private fun CardView(
             .border(1.5.dp, borderColor, shape)
             .pointerInput(card.id, scale) {
                 detectDragGestures(
+                    onDragStart = { onDragActiveChange(true) },
                     onDrag = { change, dragAmount ->
                         change.consume()
                         dragX += (dragAmount.x / scale) / density.density
                         dragY += (dragAmount.y / scale) / density.density
                     },
-                    onDragEnd = { onMoved(dragX, dragY) }
+                    onDragEnd = {
+                        onDragActiveChange(false)
+                        onMoved(dragX, dragY)
+                    },
+                    onDragCancel = { onDragActiveChange(false) }
                 )
             }
     ) {
